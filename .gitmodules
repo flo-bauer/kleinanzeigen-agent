@@ -1,0 +1,3 @@
+[submodule "ebay-kleinanzeigen-api-mcp"]
+	path = ebay-kleinanzeigen-api-mcp
+	url = https://github.com/flo-bauer/ebay-kleinanzeigen-api-mcp.git
