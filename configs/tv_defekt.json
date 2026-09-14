@@ -1,0 +1,13 @@
+{
+  "search": {
+    "query": "Fernseher defekt",
+    "location": "ulm",
+    "radius_km": 20,
+    "min_price": 0,
+    "max_price": 100,
+    "max_pages": 3
+  },
+  "manual_listings": [],
+  "output_file": "ergebnis_tv_defekt.json",
+  "criteria": "Zweck: Suche nach einem verhältnismäßig großen, defekten Fernseher (TV) für ein Bastelprojekt. Ich möchte ihn sehr günstig kaufen und mit Standard-Elektrikequipment (Lötkolben) selbst reparieren.\n\nZWINGENDE VORAUSSETZUNGEN (Ausschluss wenn fehlt):\n1. Defekt: Das Gerät MUSS als defekt deklariert sein.\n2. Fehlerbild: Der Fehler muss potenziell mit einem Lötkolben reparierbar sein (z.B. defekte Kondensatoren oder LEDs). Passende Symptome sind: 'Geht nicht mehr an', 'Startet immer wieder neu', 'Ton geht, aber kein Bild' (Backlight defekt), 'Klickt nur beim Einschalten', 'Standby-Leuchte blinkt'.\n3. Größe: Relativ großer Bildschirm (ab ca. 45 Zoll aufwärts).\n4. Bildschirm-Zustand: Der Bildschirm / das Panel MUSS intakt sein. Keine Risse, kein Glasbruch, keine physischen Dellen!\n\nOPTIONALE WÜNSCHE:\n- Bekannte Marke (LG, Samsung, Philips, Sony, Panasonic).\n- Genaue Modellnummer steht im Text.\n- Fernbedienung / Kabel dabei.\n\nAUSSCHLUSSKRITERIEN:\n- Displayschaden (Risse, Brüche im Glas, Spider-App) – absolut irreparabel!\n- Völlig verbastelte Geräte.\n- Alte Röhrenfernseher (CRT) oder sehr alte, schwere Plasma-TVs.\n- Wasserschäden."
+}
