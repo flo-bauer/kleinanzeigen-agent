@@ -37,6 +37,9 @@ class Bewertung(BaseModel):
     empfehlung: Literal["Ja", "Nein", "Vorsicht"]
     begruendung: str
 
+class BatchBewertung(BaseModel):
+    bewertungen: list[Bewertung]
+
 # =============================================================================
 # CORE CONFIG & CLIENTS
 # =============================================================================
@@ -63,79 +66,103 @@ LLM_DELAY = 2
 # HELPER FUNCTIONS
 # =============================================================================
 
-async def build_image_parts(image_urls, max_images=3):
-    """Lädt Bilder asynchron herunter und bereitet sie als Bytes für Gemini vor."""
-    parts = []
+async def build_image_parts(image_urls, listing_id="Unbekannt", max_images=None):
+    """Lädt ALLE Bilder eines Inserats herunter und gibt die Anzahl im Log aus."""
+    urls = image_urls[:max_images] if max_images else image_urls
+    if not urls:
+        return []
+
     async with httpx.AsyncClient(timeout=10) as client:
-        for url in image_urls[:max_images]:
+        async def fetch(url):
             try:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 mime = resp.headers.get("content-type", "image/jpeg")
-                parts.append(types.Part.from_bytes(data=resp.content, mime_type=mime))
+                return types.Part.from_bytes(data=resp.content, mime_type=mime)
             except Exception as e:
-                print(f"Bild konnte nicht geladen werden ({url}): {e}")
-    return parts
+                print(f"   [!] Bild-Download fehlgeschlagen ({url}): {e}")
+                return None
 
-async def evaluate_listing(listing, search_criteria, semaphore) -> Optional[Bewertung]:
-    """Bewertet ein einzelnes Inserat parallel mit Gemini."""
-    async with semaphore:
-        listing_id = listing.adid if hasattr(listing, 'adid') else getattr(listing, 'id', 'Unbekannt')
+        tasks = [fetch(url) for url in urls]
+        results = await asyncio.gather(*tasks)
+        valid_parts = [p for p in results if p is not None]
         
-        # Versuche Preis in einen Float zu parsen für saubere Sortierung
-        preis_eur = None
-        if hasattr(listing, 'price') and listing.price:
-            match = re.search(r'(\d+)', str(listing.price).replace('.', ''))
-            if match:
-                preis_eur = float(match.group(1))
-                
-        prompt_text = f"""
-Du bist mein Einkaufs-Assistent für spezialisierte Produktsuchen.
+        # TRANS TRANSPARENZ-LOG: Zeigt Erfolg pro Inserat
+        print(f"   [+] ID {listing_id}: {len(valid_parts)}/{len(urls)} Bilder erfolgreich geladen")
+        return valid_parts
 
-SUCHKRITERIEN DES NUTZERS:
+
+async def evaluate_batch(listings_batch, search_criteria) -> list[Bewertung]:
+    """Analysiert Inserate inkl. ALLER zugehöriger Bilder im gleichen Kontext-Block."""
+    contents = []
+    total_images_in_batch = 0
+    
+    prompt_header = f"""
+Du bist mein Einkaufs-Assistent. Prüfe die folgenden {len(listings_batch)} Inserate.
+Jedes Inserat ist klar durch seine ID getrennt. Die Bilder eines Inserats folgen DIREKT unter dessen Textbeschreibung.
+
+SUCHKRITERIEN:
 {search_criteria}
 
-INSERAT ZUR PRÜFUNG:
-Titel: {listing.title}
-Preis: {getattr(listing, 'price', 'Unbekannt')}
-Beschreibung: {getattr(listing, 'description', '')[:1000]} 
-
-AUFGABE:
-1. Analysiere das Angebot auf Passgenauigkeit zu den Kriterien.
-2. Gib eine klare KAUFEMPFEHLUNG (Ja / Nein / Vorsicht) ab.
-3. Begründe kurz, warum der Artikel passt oder nicht (bezogen auf zwingende Kriterien).
-4. Wenn Bilder angehängt sind: Nutze sie zur Beurteilung (Gebrauchsspuren, sichtbare Ausstattungsmerkmale, Defekte).
+INSERATE UND BILDER:
 """
+    contents.append(prompt_header)
+    
+    for idx, listing in enumerate(listings_batch, 1):
+        listing_id = listing.adid if hasattr(listing, 'adid') else getattr(listing, 'id', 'Unbekannt')
         
-        image_parts = []
+        item_text = f"\n=========================================\n"
+        item_text += f"INSERAT {idx} (ID: {listing_id})\n"
+        item_text += f"Titel: {listing.title}\n"
+        item_text += f"Preis: {getattr(listing, 'price', 'Unbekannt')}\n"
+        item_text += f"Beschreibung: {getattr(listing, 'description', '')[:500]}\n"
+        contents.append(item_text)
+        
         if hasattr(listing, 'images') and listing.images:
-            image_parts = await build_image_parts(listing.images, max_images=3)
+            # listing_id zur Kontrollausgabe mitgeben
+            img_parts = await build_image_parts(listing.images, listing_id=listing_id, max_images=None)
+            if img_parts:
+                contents.append(f"\n[Bilder zu Inserat ID {listing_id} ({len(img_parts)} Stück)]:\n")
+                contents.extend(img_parts)
+                total_images_in_batch += len(img_parts)
+
+    print(f"-> Sendung an Gemini: {len(listings_batch)} Inserate mit INSGESAMT {total_images_in_batch} Bildern.")
+
+    contents.append("""
+\n=========================================\n
+AUFGABE:
+Analysiere den Text UND die direkt zugeordneten Bilder jedes Inserats.
+Gib für JEDES Inserat ein Bewertungsobjekt im JSON-Array zurück.
+Achte darauf, dass die `listing_id` exakt mit der ID des jeweiligen Inserats übereinstimmt.
+""")
+
+    for model in LLM_MODELS:
+        try:
+            response = await gemini_client.aio.models.generate_content(
+                model=model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=BatchBewertung,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                    temperature=0.2
+                )
+            )
+            parsed: BatchBewertung = response.parsed
             
-        contents = [prompt_text, *image_parts]
-        
-        for model in LLM_MODELS:
-            for attempt in range(LLM_RETRIES):
-                try:
-                    response = await gemini_client.aio.models.generate_content(
-                        model=model,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            response_mime_type="application/json",
-                            response_schema=Bewertung,
-                            temperature=0.2
-                        )
-                    )
-                    bewertung = response.parsed
-                    # Absichern, dass ID und Preis immer im Output landen
-                    bewertung.listing_id = listing_id
-                    bewertung.preis_eur = preis_eur
-                    return bewertung
-                except Exception as e:
-                    print(f"Warnung: Modell {model} (Versuch {attempt+1}) fehlgeschlagen bei ID {listing_id}: {e}")
-                    await asyncio.sleep(LLM_DELAY)
-        
-        print(f"Fehler: Alle Versuche für '{listing.title}' fehlgeschlagen. Überspringe...")
-        return None
+            for b in parsed.bewertungen:
+                matching = next((l for l in listings_batch if (hasattr(l, 'adid') and l.adid == b.listing_id) or (hasattr(l, 'id') and l.id == b.listing_id)), None)
+                if matching and hasattr(matching, 'price') and matching.price:
+                    match = re.search(r'(\d+)', str(matching.price).replace('.', ''))
+                    if match:
+                        b.preis_eur = float(match.group(1))
+                        
+            return parsed.bewertungen
+        except Exception as e:
+            print(f"Warnung: Batch mit Modell {model} fehlgeschlagen: {e}")
+            await asyncio.sleep(3)
+            
+    return []
 
 # =============================================================================
 # MAIN LOGIC
@@ -201,20 +228,46 @@ async def main():
                     listings.append(details)
                 except Exception as e:
                     print(f"Fehler bei manuellem Inserat {adid}: {e}")
+        
+        # Alle Bilder aus den Detailseiten laden
+        print(f"\nLade vollständige Details & Galerien für {len(listings)} Inserate...")
+        detailed_listings = []
+        for idx, l in enumerate(listings, 1):
+            try:
+                d = await client.get_listing_details(l.adid)
+                # Falls Detailseite keine Bilder liefert, Vorschaubild als Fallback nutzen
+                if not d.images and hasattr(l, 'images') and l.images:
+                    d.images = l.images
+                detailed_listings.append(d)
+            except Exception as e:
+                detailed_listings.append(l)
+        
+        listings = detailed_listings
                     
         if not listings:
             print("Keine Inserate zum Analysieren gefunden. Prüfe deine Suchparameter/Preisgrenzen.")
             return
 
-        print("\nStarte KI-Analyse mit Bildverarbeitung (Parallel)...")
-        # Semaphore begrenzt parallele Requests (z.B. max 5 gleichzeitig)
-        semaphore = asyncio.Semaphore(5) 
-        
-        tasks = [evaluate_listing(listing, criteria, semaphore) for listing in listings]
-        results = await asyncio.gather(*tasks)
-        
-        # Leere Ergebnisse herausfiltern
-        bewertungen = [res for res in results if res is not None]
+        # =====================================================================
+        # BATCH-ANALYSE (15 Inserate pro Gemini-Request)
+        # =====================================================================
+        print("\nStarte KI-Batch-Analyse mit Bildverarbeitung...")
+        BATCH_SIZE = 15
+        all_bewertungen = []
+
+        # Inserate in 15er-Blöcke aufteilen
+        batches = [listings[i:i + BATCH_SIZE] for i in range(0, len(listings), BATCH_SIZE)]
+
+        for idx, batch in enumerate(batches, 1):
+            print(f"Verarbeite Batch {idx}/{len(batches)} ({len(batch)} Inserate)...")
+            results = await evaluate_batch(batch, criteria)
+            all_bewertungen.extend(results)
+
+            # 6 Sekunden Pause zwischen Batches (Schutz vor 429 Rate Limits)
+            if idx < len(batches):
+                await asyncio.sleep(6)
+
+        bewertungen = all_bewertungen
         
         # 3. Strukturierte Ergebnisse sortieren: "Ja" -> "Vorsicht" -> "Nein", dann nach Preis
         order = {"Ja": 0, "Vorsicht": 1, "Nein": 2}
