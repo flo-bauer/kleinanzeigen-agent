@@ -48,8 +48,12 @@ env/
 *.log
 logs/
 
-.env
+# Agent results
 ergebnis_*.json
 repomix-output.md
-__pycache__/
-.vscode/
+
+# Local AI tooling (Claude Code, claude-mem)
+.claude/
+.claudeignore
+.cmem-projects/
+agent-transcripts/

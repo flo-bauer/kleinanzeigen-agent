@@ -58,7 +58,9 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY not set. Please create a .env file with your API key.")
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+# Without a timeout a stuck request blocks the whole run forever
+LLM_TIMEOUT_MS = 180_000
+gemini_client = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=LLM_TIMEOUT_MS))
 
 # Stable model chain (fallback order)
 LLM_MODELS = [
@@ -72,12 +74,26 @@ LLM_MODELS = [
 LLM_RETRIES = 2
 LLM_DELAY = 2
 
-# Concurrency for fetching full listing details (parallel browser contexts)
-DETAIL_FETCH_CONCURRENCY = 5
+# Concurrency for fetching full listing details (parallel browser contexts).
+# Keep low: too many parallel requests get the IP range temporarily blocked.
+DETAIL_FETCH_CONCURRENCY = 2
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+def parse_price_eur(price: str) -> float | None:
+    """
+    Convert a scraped price text (e.g. "1.000", "99 € VB", "Zu verschenken") to EUR.
+
+    Returns None if the text contains no usable price (e.g. "VB" only).
+    """
+    text = str(price)
+    if "verschenken" in text.lower():
+        return 0.0
+    match = re.search(r'(\d+)', text.replace('.', ''))
+    return float(match.group(1)) if match else None
+
 
 async def build_image_parts(image_urls: list[str], listing_id: str = "Unknown", max_images: int | None = None) -> list[types.Part]:
     """
@@ -211,7 +227,8 @@ LISTINGS AND IMAGES:
                 contents.extend(img_parts)
                 total_images_in_batch += len(img_parts)
 
-    print(f"-> Sending to Gemini: {len(listings_batch)} listings with TOTAL {total_images_in_batch} images.")
+    image_mb = sum(len(p.inline_data.data) for p in contents if isinstance(p, types.Part)) / 1_000_000
+    print(f"-> Sending to Gemini: {len(listings_batch)} listings with TOTAL {total_images_in_batch} images ({image_mb:.1f} MB).")
 
     contents.append("""
 \n=========================================\n
@@ -250,9 +267,9 @@ Ensure the `listing_id` exactly matches the ID of the respective listing.
                         None
                     )
                     if matching and hasattr(matching, 'price') and matching.price:
-                        match = re.search(r'(\d+)', str(matching.price).replace('.', ''))
-                        if match:
-                            eval_item.price_eur = float(match.group(1))
+                        price_eur = parse_price_eur(matching.price)
+                        if price_eur is not None:
+                            eval_item.price_eur = price_eur
 
                 return parsed.evaluations
             except Exception as e:
