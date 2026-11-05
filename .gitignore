@@ -57,3 +57,13 @@ repomix-output.md
 .claudeignore
 .cmem-projects/
 agent-transcripts/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Local AI tooling configs (machine-specific)
+CLAUDE.md
+.mcp.json
+.ignore
+.github/copilot-instructions.md
+docs/

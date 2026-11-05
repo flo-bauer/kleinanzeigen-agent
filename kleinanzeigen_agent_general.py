@@ -64,8 +64,8 @@ gemini_client = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOpti
 
 # Stable model chain (fallback order)
 LLM_MODELS = [
-    # "gemini-3.8-flash",
-    # "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3-flash-preview",
